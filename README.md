@@ -67,6 +67,89 @@ Finally, whenever the image is needed
 docker run --gpus all --runtime=nvidia -it dreamy_heisenberg bash
 ```
 
+## Training without Docker
+
+To train the model without Docker, follow these steps:
+
+### Prerequisites
+
+1. **Python 3.10**: The project is tested with Python 3.10. Install it if needed:
+   ```bash
+   # On Ubuntu/Debian
+   sudo add-apt-repository ppa:deadsnakes/ppa
+   sudo apt update
+   sudo apt install python3.10 python3.10-venv python3.10-dev
+   ```
+
+2. **CUDA and cuDNN** (for GPU training): The project requires CUDA 11.x and cuDNN 8.6.0.163. Install them if you plan to use GPU:
+   - Download CUDA 11.x from [NVIDIA](https://developer.nvidia.com/cuda-11-0-0-download-archive)
+   - Download cuDNN from [NVIDIA cuDNN](https://developer.nvidia.com/cudnn)
+   - Follow installation instructions for your system
+
+### Setup
+
+1. **Create a virtual environment**:
+   ```bash
+   python3.10 -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ```
+
+2. **Install dependencies**:
+   ```bash
+   
+   pip install -r requirements.txt
+   ```
+
+3. **Verify GPU setup** (if using GPU):
+   ```bash
+   python -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'))"
+   ```
+
+### Running Training
+
+1. **Navigate to the training directory**:
+   ```bash
+   cd experiments/train_rl_agent
+   ```
+
+2. **Run the training script**:
+   ```bash
+   python runner_final.py [--ent_coeff 0.1] [--learning_rate 3e-4] [--add_reward_per_step 0.0]
+   ```
+
+   Optional arguments:
+   - `--ent_coeff`: Entropy coefficient (default: 0.1)
+   - `--learning_rate`: Learning rate (default: 3e-4)
+   - `--add_reward_per_step`: Reward per step, should be non-positive (default: 0.0)
+
+3. **GPU Configuration**: The script is configured to use 2 GPUs by default (line 170 in `runner_final.py`). If you have a different number of GPUs:
+   - **Single GPU**: Change line 170 from:
+     ```python
+     strategy = tf.distribute.MirroredStrategy(["GPU:0", "GPU:1"])
+     ```
+     to:
+     ```python
+     strategy = tf.distribute.MirroredStrategy(["GPU:0"])
+     ```
+   - **CPU only**: Change to:
+     ```python
+     strategy = tf.distribute.get_strategy()  # Default strategy (CPU)
+     ```
+   - **Multiple GPUs**: Adjust the list, e.g., `["GPU:0", "GPU:1", "GPU:2"]`
+
+4. **Monitoring training**: Training logs are saved in `runs/para/<timestamp>/logs/`. View with TensorBoard:
+   ```bash
+   tensorboard --logdir runs/para
+   ```
+
+5. **Model checkpoints**: Saved models are stored in `runs/para/<timestamp>/saved_agent/` every 10 updates (configurable via `save_every` parameter).
+
+### Notes
+
+- Training uses 90 parallel environments by default (`n_envs = 90`). You can reduce this if you have limited CPU/memory.
+- The script uses multiprocessing for environments (`multiprocess = True`). Set to `False` if you encounter issues.
+- Total training timesteps: 36 million (configurable via `total_timesteps` parameter).
+- The minibatch size (3000) should be divisible by the number of GPUs used.
 
 # ZXreinforce
 ## This is a repository that does not include the saved data

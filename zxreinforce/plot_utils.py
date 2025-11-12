@@ -37,15 +37,15 @@ def get_angle_networkx(angle:list)->str:
 def get_color_networkx(color:list)->str:
     """get color of node for netwrokx graph"""
     if np.all(color==oc.INPUT):
-        return '#ffb000'
+        return 'black'
     elif np.all(color==oc.OUTPUT):
-        return '#ffb000'
+        return 'black'
     elif np.all(color==oc.RED):
         return '#dc267f'
     elif np.all(color==oc.GREEN):
-        return '#648fff'
+        return 'green'
     elif np.all(color==oc.HADAMARD):
-        return "black"
+        return '#ffb000'
     else:
         raise Exception("COLOR NOT RECOGNISED")
 

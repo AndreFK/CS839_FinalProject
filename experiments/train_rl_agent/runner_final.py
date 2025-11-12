@@ -45,15 +45,29 @@ parser.add_argument("--learning_rate", default=3e-4, type=float,
                     help="Learning rate of ADAM optimizer")
 parser.add_argument("--add_reward_per_step", default=0., type=float,
                     help="Reward per step, should be non-positive")
+parser.add_argument("--n_envs", default=90, type=int,
+                    help="Number of parallel environments (reduce for lower memory usage)")
+parser.add_argument("--max_sample_steps", default=1000, type=int,
+                    help="Number of steps sampled per environment before training")
+parser.add_argument("--minibatch_size", default=3000, type=int,
+                    help="Minibatch size for training")
+parser.add_argument("--total_timesteps", default=36e6, type=float,
+                    help="Total number of timesteps for training")
+parser.add_argument("--multiprocess", action="store_true", default=True,
+                    help="Use multiprocessing for environments")
+parser.add_argument("--no-multiprocess", dest="multiprocess", action="store_false",
+                    help="Disable multiprocessing (single process, uses less memory)")
+parser.add_argument("--train_iterations", default=10, type=int,
+                    help="Number of training iterations per epoch")
 args = vars(parser.parse_args())
 
 ### Hyperparameters of the PPO algorithm-----------------------------------------------------------
 
 # Amount of environments executed in different CPU processes
-n_envs = 90
+n_envs = args["n_envs"]
 
 # Number of steps sampled per environement in one trajectory before training
-max_sample_steps = 1000
+max_sample_steps = args["max_sample_steps"]
 # Steps until environement resets
 max_steps = 200
 # Give countdown to NN if close to finish trajectory
@@ -62,7 +76,7 @@ count_down_from = 20
 # Absolute value gradients are clipped to
 abs_grad_clip = 100
 # Maximum number of gradient updates after one trajectoruy sampling period
-train_iterations = 10
+train_iterations = args["train_iterations"]
 # Discount factor for returns
 gamma = 0.99
 # Trade-off between bias and variance in return estimation: If big, high variance, low bias
@@ -75,7 +89,7 @@ anneal_clip_range = True
 target_kl = 0.01
 # How many individual steps to use in one training update.
 # Minibatchsize should be divisible by amount of parallel GPUs used
-minibatch_size = 3000
+minibatch_size = args["minibatch_size"]
 # Coeff of entropy in loss function. If higher leads to more exploration
 ent_coeff = args["ent_coeff"]
 # Linearly anneal entropy coeff
@@ -104,7 +118,7 @@ check_consistencty = False
 dont_allow_stop = True
 
 # Use multiple cpus for environment
-multiprocess = True
+multiprocess = args["multiprocess"]
 
 # Seed for envvironments
 seed = 0
@@ -118,7 +132,7 @@ log_action_hist = True
 log_episode_reward = True
 
 # Total timesteps to take in the environment
-total_timesteps = 36e6
+total_timesteps = args["total_timesteps"]
 
 # Params for initial env observations
 min_spiders = 10
@@ -157,6 +171,7 @@ print(f"log_dir: {str(log_dir)}", flush=True)
 # Save dir
 save_dir = exp_dir / "saved_agent"
 save_dir.mkdir(parents=True, exist_ok=True)
+print(f"Models will be saved to: {str(save_dir)}", flush=True)
 
 if COPY_Files:
     shutil.copyfile("runner_final.py",
@@ -166,8 +181,8 @@ if COPY_Files:
     shutil.copyfile("../../zxreinforce/RL_Models.py", str(exp_dir / "RL_Models.py"))
     shutil.copyfile("../../zxreinforce/own_constants.py", str(exp_dir / "own_constants.py"))
 
-# Strategy for distributed GPU training
-strategy = tf.distribute.MirroredStrategy(["GPU:0", "GPU:1"])
+# Strategy for CPU training (change to MirroredStrategy(["GPU:0", "GPU:1"]) if GPU is available)
+strategy = tf.distribute.get_strategy()  # Uses CPU (default strategy)
 
 # Schema of our Graph
 graph_schema = text_format.Merge(OBSERVATION_SCHEMA_ZX_final, schema_pb2.GraphSchema())
@@ -398,6 +413,14 @@ def train():
         # Save models
         if update % save_every == 0:
             ppo_agent.save(save_dir, index=update)
+            print(f"Saved model at update {update}", flush=True)
+    
+    # Save final model after training completes (even if not divisible by save_every)
+    final_update = num_updates
+    if final_update % save_every != 0:
+        ppo_agent.save(save_dir, index=final_update)
+        print(f"Saved final model at update {final_update}", flush=True)
+    print(f"Training complete! Final model saved to: {str(save_dir)}", flush=True)
 
 
 train()
