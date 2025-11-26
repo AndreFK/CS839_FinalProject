@@ -28,7 +28,7 @@ import zxreinforce.own_constants as oc
 from zxreinforce.ZX_env import ZXCalculus
 from zxreinforce.rl_schemas import OBSERVATION_SCHEMA_ZX_final
 from zxreinforce.VecAsyncEnvironment import VecZXCalculus, AsyncVectorEnv
-from zxreinforce.Resetters import Resetter_ZERO_PI_PIHALF_ARB_hada
+from zxreinforce.Resetters import Resetter_ZERO_PI_PIHALF_ARB_hada, Resetter_FlowPatterns
 from zxreinforce.VecAsyncEnvironment import AsyncVectorEnv
 from zxreinforce.Buffer import TrajectoryBuffer
 from zxreinforce.PPO_Agent_mult_GPU import PPOAgentPara
@@ -191,19 +191,35 @@ graph_tensor_spec = tfgnn.create_graph_spec_from_schema_pb(graph_schema)
 if multiprocess:
     env_gen = []
     for idx in range(n_envs):
-        resetterr = Resetter_ZERO_PI_PIHALF_ARB_hada(n_in_min,
-                                                     n_in_max,
-                                                     min_spiders,
-                                                     max_spiders,
-                                                     pi_fac,
-                                                     pi_half_fac,
-                                                     arb_fac,
-                                                     p_hada,
-                                                     min_mean_neighbours,
-                                                     max_mean_neighbours,
-                                                     np.random.default_rng(seed + idx))
+        # resetterr = Resetter_ZERO_PI_PIHALF_ARB_hada(n_in_min,
+        #                                              n_in_max,
+        #                                              min_spiders,
+        #                                              max_spiders,
+        #                                              pi_fac,
+        #                                              pi_half_fac,
+        #                                              arb_fac,
+        #                                              p_hada,
+        #                                              min_mean_neighbours,
+        #                                              max_mean_neighbours,
+        #                                              np.random.default_rng(seed + idx))
 
-
+        resetterr = Resetter_FlowPatterns(
+            n_in_min=2,
+            n_in_max=4,
+            n_out_min=2,
+            n_out_max=4,
+            n_layers_min=2,
+            n_layers_max=4,
+            nodes_per_layer_min=3,
+            nodes_per_layer_max=6,
+            p_edge=0.5,
+            pi_fac=0.5,
+            pi_half_fac=0.5,
+            arb_fac=0.5,
+            p_hada=0.1,
+            rng=np.random.default_rng(seed + idx)
+        )
+        
         def get_env(reseter):
             return ZXCalculus(max_steps=max_steps,
                               add_reward_per_step=add_reward_per_step,
