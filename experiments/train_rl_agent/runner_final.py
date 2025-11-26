@@ -59,6 +59,10 @@ parser.add_argument("--no-multiprocess", dest="multiprocess", action="store_fals
                     help="Disable multiprocessing (single process, uses less memory)")
 parser.add_argument("--train_iterations", default=10, type=int,
                     help="Number of training iterations per epoch")
+parser.add_argument("--spider_web_weight", default=0.1, type=float,
+                    help="Weight for spider-web reduction reward component")
+parser.add_argument("--flow_preservation_weight", default=0.1, type=float,
+                    help="Weight for flow preservation reward component")
 args = vars(parser.parse_args())
 
 ### Hyperparameters of the PPO algorithm-----------------------------------------------------------
@@ -116,6 +120,10 @@ add_reward_per_step = args["add_reward_per_step"]
 check_consistencty = False
 # allow stop action
 dont_allow_stop = True
+# Spider-web reduction weight
+spider_web_weight = args["spider_web_weight"]
+# Flow preservation weight
+flow_preservation_weight = args["flow_preservation_weight"]
 
 # Use multiple cpus for environment
 multiprocess = args["multiprocess"]
@@ -226,7 +234,9 @@ if multiprocess:
                               resetter=reseter,
                               check_consistencty=check_consistencty,
                               count_down_from=count_down_from,
-                              dont_allow_stop=dont_allow_stop)
+                              dont_allow_stop=dont_allow_stop,
+                              spider_web_weight=spider_web_weight,
+                              flow_preservation_weight=flow_preservation_weight)
 
 
         # Fuctools.partial makes sure that the right resetter is used
@@ -250,7 +260,9 @@ else:
                         max_steps=max_steps,
                         add_reward_per_step=add_reward_per_step,
                         check_consistencty=check_consistencty,
-                        dont_allow_stop=dont_allow_stop)
+                        dont_allow_stop=dont_allow_stop,
+                        spider_web_weight=spider_web_weight,
+                        flow_preservation_weight=flow_preservation_weight)
 
 # Buffer for storing trajectories of one sampling stage
 buffer = TrajectoryBuffer(n_envs, max_sample_steps)
