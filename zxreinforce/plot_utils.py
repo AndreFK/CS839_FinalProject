@@ -17,7 +17,7 @@ cycler_color_palette_ibm = cycler.cycler(color=color_palette_ibm)
 def get_angle_networkx(angle:list)->str:
     """return angle for plotting in networkx graph"""
     if np.all(angle==oc.ZERO):
-        return ""
+        return r"$0$"  # Show 0 for zero phase
     elif np.all(angle==oc.PI_half):
         return r"$\pi/2$"
 
@@ -31,7 +31,7 @@ def get_angle_networkx(angle:list)->str:
         return r"$\alpha$"
     
     elif np.all(angle==oc.NO_ANGLE):
-        return ""
+        return ""  # No angle for INPUT/OUTPUT nodes
     
 
 def get_color_networkx(color:list)->str:
@@ -56,10 +56,10 @@ def get_color_edge_networkx(selected_edges:int)->str:
     else:
         return "grey"
     
-def observation_to_networkx(observation:tuple)->nx.DiGraph:
+def observation_to_networkx(observation:tuple)->nx.Graph:
     """return networkx graph from observation as returned by environment"""
     colors, angles, selected_node, source, target, selected_edges, n_nodes, n_edges, context = observation
-    G = nx.DiGraph()
+    G = nx.Graph()
     for idx in range(n_nodes):
         G.add_node(idx, angle=get_angle_networkx(angles[idx]), color=get_color_networkx(colors[idx]))
     for idx in range(n_edges):

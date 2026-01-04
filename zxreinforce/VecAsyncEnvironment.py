@@ -24,20 +24,26 @@ class VecZXCalculus():
                  max_steps:int=1000, 
                  add_reward_per_step:float=0.,
                  check_consistencty:bool=False,
-                 dont_allow_stop:bool=False):
+                 dont_allow_stop:bool=False,
+                 spider_web_weight:float=0.1,
+                 flow_preservation_weight:float=0.1):
         """resetter_list: list of resetters for the environments
         n_envs: number of environments to be created
         max_steps: maximum number of steps before environament resets,
         add_reward_per_step: reward added for each step,
         check_consistencty: whether to check if the graph is consistent after each step,
         dont_allow_stop: whether to allow the stop action,
+        spider_web_weight: weight for spider-web reduction reward component,
+        flow_preservation_weight: weight for flow preservation reward component,
         """
         self.n_envs = n_envs
         self.env_list = [ZXCalculus(max_steps=max_steps, 
                                     add_reward_per_step=add_reward_per_step,
                                     resetter=resetter_list[idx],
                                     check_consistencty=check_consistencty,
-                                    dont_allow_stop=dont_allow_stop) for idx in range(n_envs)]
+                                    dont_allow_stop=dont_allow_stop,
+                                    spider_web_weight=spider_web_weight,
+                                    flow_preservation_weight=flow_preservation_weight) for idx in range(n_envs)]
         
     def step(self, actions:np.ndarray) -> tuple:
         """actions: array of actions for each environment,
