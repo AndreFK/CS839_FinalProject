@@ -3,3 +3,5 @@
 experiments/train_rl_agent/runs/
 zxreinforce/__pycache__/
 zxreinforce/own_graph_layers/__pycache__/
+*.png
+*.sh

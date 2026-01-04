@@ -28,7 +28,7 @@ import zxreinforce.own_constants as oc
 from zxreinforce.ZX_env import ZXCalculus
 from zxreinforce.rl_schemas import OBSERVATION_SCHEMA_ZX_final
 from zxreinforce.VecAsyncEnvironment import VecZXCalculus, AsyncVectorEnv
-from zxreinforce.Resetters import Resetter_ZERO_PI_PIHALF_ARB_hada, Resetter_FlowPatterns
+from zxreinforce.Resetters import Resetter_ZERO_PI_PIHALF_ARB_hada, Resetter_FlowPatterns, Resetter_BrickworkPattern
 from zxreinforce.VecAsyncEnvironment import AsyncVectorEnv
 from zxreinforce.Buffer import TrajectoryBuffer
 from zxreinforce.PPO_Agent_mult_GPU import PPOAgentPara
@@ -63,6 +63,9 @@ parser.add_argument("--spider_web_weight", default=0.1, type=float,
                     help="Weight for spider-web reduction reward component")
 parser.add_argument("--flow_preservation_weight", default=0.1, type=float,
                     help="Weight for flow preservation reward component")
+parser.add_argument("--resetter", default="brickwork", type=str,
+                    choices=["brickwork", "original", "flow"],
+                    help="Resetter to use: 'brickwork' (BrickworkPattern), 'original' (ZERO_PI_PIHALF_ARB_hada), or 'flow' (FlowPatterns)")
 args = vars(parser.parse_args())
 
 ### Hyperparameters of the PPO algorithm-----------------------------------------------------------
@@ -125,11 +128,17 @@ spider_web_weight = args["spider_web_weight"]
 # Flow preservation weight
 flow_preservation_weight = args["flow_preservation_weight"]
 
+# Resetter selection
+resetter_type = args["resetter"]
+print(f"Using resetter: {resetter_type}", flush=True)
+
 # Use multiple cpus for environment
 multiprocess = args["multiprocess"]
 
 # Seed for envvironments
-seed = 0
+# Use time-based seed to get different diagrams each run
+seed = int(time.time()) % (2**31)
+print(f"Using seed: {seed}")
 
 # Copy pyh=thon files to result folder
 COPY_Files = True
@@ -189,8 +198,34 @@ if COPY_Files:
     shutil.copyfile("../../zxreinforce/RL_Models.py", str(exp_dir / "RL_Models.py"))
     shutil.copyfile("../../zxreinforce/own_constants.py", str(exp_dir / "own_constants.py"))
 
-# Strategy for CPU training (change to MirroredStrategy(["GPU:0", "GPU:1"]) if GPU is available)
-strategy = tf.distribute.get_strategy()  # Uses CPU (default strategy)
+# Strategy for training - auto-detect GPUs if available
+# Try to set up CUDA library paths for WSL2
+import os
+if 'LD_LIBRARY_PATH' not in os.environ or '/usr/lib/wsl/lib' not in os.environ.get('LD_LIBRARY_PATH', ''):
+    try:
+        import nvidia.cuda_runtime.lib as cuda_rt
+        import nvidia.cublas.lib as cublas
+        import nvidia.cudnn.lib as cudnn
+        cuda_path = os.path.dirname(cuda_rt.__file__)
+        cublas_path = os.path.dirname(cublas.__file__)
+        cudnn_path = os.path.dirname(cudnn.__file__)
+        wsl_cuda_path = "/usr/lib/wsl/lib"
+        system_cuda_path = "/usr/lib/x86_64-linux-gnu"
+        current_ld_path = os.environ.get('LD_LIBRARY_PATH', '')
+        os.environ['LD_LIBRARY_PATH'] = f"{wsl_cuda_path}:{system_cuda_path}:{cuda_path}:{cublas_path}:{cudnn_path}:{current_ld_path}"
+    except ImportError:
+        pass  # CUDA packages not installed, will use CPU
+
+gpus = tf.config.list_physical_devices('GPU')
+if len(gpus) > 0:
+    print(f"Found {len(gpus)} GPU(s), using MirroredStrategy for multi-GPU training", flush=True)
+    for i, gpu in enumerate(gpus):
+        print(f"  GPU {i}: {gpu}", flush=True)
+    strategy = tf.distribute.MirroredStrategy()
+else:
+    print("⚠️  No GPUs detected by TensorFlow, using CPU strategy", flush=True)
+    print("   Note: Training will be slower on CPU. If you have a GPU, see GPU_SETUP_WSL2.md for troubleshooting.", flush=True)
+    strategy = tf.distribute.get_strategy()  # Uses CPU (default strategy)
 
 # Schema of our Graph
 graph_schema = text_format.Merge(OBSERVATION_SCHEMA_ZX_final, schema_pb2.GraphSchema())
@@ -199,34 +234,48 @@ graph_tensor_spec = tfgnn.create_graph_spec_from_schema_pb(graph_schema)
 if multiprocess:
     env_gen = []
     for idx in range(n_envs):
-        # resetterr = Resetter_ZERO_PI_PIHALF_ARB_hada(n_in_min,
-        #                                              n_in_max,
-        #                                              min_spiders,
-        #                                              max_spiders,
-        #                                              pi_fac,
-        #                                              pi_half_fac,
-        #                                              arb_fac,
-        #                                              p_hada,
-        #                                              min_mean_neighbours,
-        #                                              max_mean_neighbours,
-        #                                              np.random.default_rng(seed + idx))
-
-        resetterr = Resetter_FlowPatterns(
-            n_in_min=2,
-            n_in_max=4,
-            n_out_min=2,
-            n_out_max=4,
-            n_layers_min=2,
-            n_layers_max=4,
-            nodes_per_layer_min=3,
-            nodes_per_layer_max=6,
-            p_edge=0.5,
-            pi_fac=0.5,
-            pi_half_fac=0.5,
-            arb_fac=0.5,
-            p_hada=0.1,
-            rng=np.random.default_rng(seed + idx)
-        )
+        # Select resetter based on parameter
+        if resetter_type == "brickwork":
+            resetterr = Resetter_BrickworkPattern(
+                n_qubits_min=2,
+                n_qubits_max=4,
+                depth_min=2,
+                depth_max=4,
+                rng=np.random.default_rng(seed + idx)
+            )
+        elif resetter_type == "original":
+            resetterr = Resetter_ZERO_PI_PIHALF_ARB_hada(
+                n_in_min=n_in_min,
+                n_in_max=n_in_max,
+                min_spiders=min_spiders,
+                max_spiders=max_spiders,
+                pi_fac=pi_fac,
+                pi_half_fac=pi_half_fac,
+                arb_fac=arb_fac,
+                p_hada=p_hada,
+                min_mean_neighbours=min_mean_neighbours,
+                max_mean_neighbours=max_mean_neighbours,
+                rng=np.random.default_rng(seed + idx)
+            )
+        elif resetter_type == "flow":
+            resetterr = Resetter_FlowPatterns(
+                n_in_min=2,
+                n_in_max=4,
+                n_out_min=2,
+                n_out_max=4,
+                n_layers_min=2,
+                n_layers_max=4,
+                nodes_per_layer_min=3,
+                nodes_per_layer_max=6,
+                p_edge=0.5,
+                pi_fac=0.5,
+                pi_half_fac=0.5,
+                arb_fac=0.5,
+                p_hada=0.1,
+                rng=np.random.default_rng(seed + idx)
+            )
+        else:
+            raise ValueError(f"Unknown resetter type: {resetter_type}")
         
         def get_env(reseter):
             return ZXCalculus(max_steps=max_steps,
@@ -243,17 +292,48 @@ if multiprocess:
         env_gen.append(functools.partial(get_env, resetterr))
     env = AsyncVectorEnv(env_gen)
 else:
-    resetter_list = [Resetter_ZERO_PI_PIHALF_ARB_hada(n_in_min,
-                                                      n_in_max,
-                                                      min_spiders,
-                                                      max_spiders,
-                                                      pi_fac,
-                                                      pi_half_fac,
-                                                      arb_fac,
-                                                      p_hada,
-                                                      min_mean_neighbours,
-                                                      max_mean_neighbours,
-                                                      np.random.default_rng(seed + idx)) for idx in range(n_envs)]
+    # Select resetter based on parameter
+    if resetter_type == "brickwork":
+        resetter_list = [Resetter_BrickworkPattern(
+            n_qubits_min=2,
+            n_qubits_max=4,
+            depth_min=2,
+            depth_max=4,
+            rng=np.random.default_rng(seed + idx)
+        ) for idx in range(n_envs)]
+    elif resetter_type == "original":
+        resetter_list = [Resetter_ZERO_PI_PIHALF_ARB_hada(
+            n_in_min=n_in_min,
+            n_in_max=n_in_max,
+            min_spiders=min_spiders,
+            max_spiders=max_spiders,
+            pi_fac=pi_fac,
+            pi_half_fac=pi_half_fac,
+            arb_fac=arb_fac,
+            p_hada=p_hada,
+            min_mean_neighbours=min_mean_neighbours,
+            max_mean_neighbours=max_mean_neighbours,
+            rng=np.random.default_rng(seed + idx)
+        ) for idx in range(n_envs)]
+    elif resetter_type == "flow":
+        resetter_list = [Resetter_FlowPatterns(
+            n_in_min=2,
+            n_in_max=4,
+            n_out_min=2,
+            n_out_max=4,
+            n_layers_min=2,
+            n_layers_max=4,
+            nodes_per_layer_min=3,
+            nodes_per_layer_max=6,
+            p_edge=0.5,
+            pi_fac=0.5,
+            pi_half_fac=0.5,
+            arb_fac=0.5,
+            p_hada=0.1,
+            rng=np.random.default_rng(seed + idx)
+        ) for idx in range(n_envs)]
+    else:
+        raise ValueError(f"Unknown resetter type: {resetter_type}")
     # This is a dummy vector env, that executes the individual envs after each other
     env = VecZXCalculus(resetter_list,
                         n_envs=n_envs,

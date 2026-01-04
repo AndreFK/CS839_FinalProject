@@ -9,6 +9,8 @@ from collections import deque
 from .own_constants import (INPUT, OUTPUT, GREEN, RED, HADAMARD,
                             ZERO, PI_half, PI, PI_three_half, ARBITRARY, NO_ANGLE,
                             ANGLE_LIST, N_NODE_ACTIONS, N_EDGE_ACTIONS)
+from .spider_web_detection import get_spider_web_penalty
+from .flow_checking import has_flow
 
 
 class ZXCalculus():
@@ -20,13 +22,17 @@ class ZXCalculus():
                  resetter=None,
                  check_consistencty: bool = False,
                  count_down_from: int = 20,
-                 dont_allow_stop: bool = False):
+                 dont_allow_stop: bool = False,
+                 spider_web_weight: float = 0.1,
+                 flow_preservation_weight: float = 0.1):
         """max_steps: maximum number of steps per trajectory,
         add_reward_per_step: reward added per step,
         resetter: object that can reset the environment,
         check_consistencty: if True, checks consistency of diagram after each step,
         count_down_from: start stop counter from this number,
         dont_allow_stop: if True, stop action is only allowed if no other action is available,
+        spider_web_weight: weight for spider-web reduction reward component,
+        flow_preservation_weight: weight for flow preservation reward component,
         """
 
         self.add_reward_per_step = add_reward_per_step
@@ -35,6 +41,8 @@ class ZXCalculus():
         self.resetter = resetter
         self.count_down_from = count_down_from
         self.dont_allow_stop = dont_allow_stop
+        self.spider_web_weight = spider_web_weight
+        self.flow_preservation_weight = flow_preservation_weight
 
     def load_observation(self, observation: tuple):
         """ observation: (colors, angles, selected_node, source, target, selected_edges)
@@ -77,6 +85,14 @@ class ZXCalculus():
         self.current_spiders = self.n_spiders
         self.max_spiders = self.n_spiders
         self.max_edges = self.n_edges
+        
+        # Track spider-web and flow state
+        self.previous_spider_web_penalty = get_spider_web_penalty(
+            colors, source, target)
+        self.current_spider_web_penalty = self.previous_spider_web_penalty
+        self.previous_has_flow = has_flow(colors, source, target, INPUT, OUTPUT, angles=angles)
+        self.current_has_flow = self.previous_has_flow
+        
         return self.get_observation_mask()
 
     @property
@@ -188,6 +204,21 @@ class ZXCalculus():
             self.current_edges = self.n_edges
             self.max_spiders = max(self.n_spiders, self.max_spiders)
             self.max_edges = max(self.n_edges, self.max_edges)
+            
+            # Check if current_edges reached 0 - if so, reset the environment
+            if self.current_edges == 0:
+                print(f"WARNING: current_edges reached 0 at step {self.step_counter} with action {action}. Resetting environment.")
+                observation, mask = self.reset()
+                return observation, mask, 0, 1  # Return with done=1 to signal episode end
+            
+            # Update spider-web and flow state
+            self.previous_spider_web_penalty = self.current_spider_web_penalty
+            self.current_spider_web_penalty = get_spider_web_penalty(
+                self.colors, self.source, self.target)
+            self.previous_has_flow = self.current_has_flow
+            self.current_has_flow = has_flow(
+                self.colors, self.source, self.target, INPUT, OUTPUT, angles=self.angles)
+            
             reward = self.delta_spiders()
 
             # return observation, mask, reward, done
@@ -199,8 +230,44 @@ class ZXCalculus():
         return self.previous_spiders - self.current_spiders
 
     def delta_spiders(self) -> float:
-        """returns reward"""
-        return (self.max_spiders / self.current_spiders) * (self.max_edges / self.current_edges)
+        """returns reward with spider-web reduction and flow preservation components"""
+        # Base reward: reduction in spiders and edges
+        if self.current_spiders == 0 or self.current_edges == 0:
+            return 1000.0  # Large reward for fully simplified (or invalid) diagram
+        
+        base_reward = (self.max_spiders / self.current_spiders) * (self.max_edges / self.current_edges)
+        
+        # Add incremental reward for progress (encourages continued simplification)
+        # This helps when the ratio plateaus but there's still room for improvement
+        spiders_removed = self.max_spiders - self.current_spiders
+        edges_removed = self.max_edges - self.current_edges
+        progress_reward = 0.05 * (spiders_removed + edges_removed)
+        
+        # Spider-web reduction: reward for reducing spider-web penalty
+        spider_web_reward = 0.0
+        if self.spider_web_weight > 0:
+            spider_web_reduction = self.previous_spider_web_penalty - self.current_spider_web_penalty
+            spider_web_reward = self.spider_web_weight * spider_web_reduction
+        
+        # Flow preservation: reward for maintaining flow, penalty for not having flow
+        # Make flow rewards more significant relative to base reward
+        flow_reward = 0.0
+        if self.flow_preservation_weight > 0:
+            if self.current_has_flow:
+                # Reward for having flow - scale with base reward to make it meaningful
+                # Use a smaller multiplier so flow doesn't dominate, but still matters
+                flow_reward = self.flow_preservation_weight * min(1.0, base_reward * 0.05)
+            else:
+                # Penalty for not having flow (whether lost or never had it)
+                # Use larger penalty if flow was lost (to discourage breaking flow)
+                if self.previous_has_flow and not self.current_has_flow:
+                    # Larger penalty for losing flow - but don't make it too harsh
+                    flow_reward = -1.5 * self.flow_preservation_weight * min(1.0, base_reward * 0.05)
+                else:
+                    # Standard penalty for no flow - smaller to allow exploration
+                    flow_reward = -0.5 * self.flow_preservation_weight * min(1.0, base_reward * 0.05)
+        
+        return base_reward + progress_reward + spider_web_reward + flow_reward
 
 
 def save(colors: np.ndarray, angles: np.ndarray, selected_node: np.ndarray,
@@ -375,6 +442,10 @@ def get_mask_list(colors, angles, selected_node, source, target,
 
     # All green or red nodes allowed
     mask_start_unmerge_rule = copy.copy(mask_red_or_green)
+    # Exclude boundary nodes (INPUT/OUTPUT) from unmerge
+    for i in range(n_nodes):
+        if is_boundary_node(i, colors):
+            mask_start_unmerge_rule[i] = False
     # Arbitrary nodes need at least two neighbors
     # Count how many edges a node has
     if len(np.bincount(source, minlength=n_nodes)) != len(np.bincount(target, minlength=n_nodes)):
@@ -397,6 +468,10 @@ def get_mask_list(colors, angles, selected_node, source, target,
     # Mask for (h) sym: change color and put hadamards
     # Also allowed on all green and red nodes
     mask_color_change = copy.copy(mask_red_or_green)
+    # Exclude boundary nodes (INPUT/OUTPUT) from color change
+    for i in range(n_nodes):
+        if is_boundary_node(i, colors):
+            mask_color_change[i] = False
 
     # Mask on Hadamard handlings splitting
     mask_hadamard_split = np.full(n_nodes, False)
@@ -405,6 +480,10 @@ def get_mask_list(colors, angles, selected_node, source, target,
     # Mask on Hadamard merging (compare p 26 LARGE ZX caculus)
     # Mask for colored spiders with exactly two edges
     mask_hadamard_merge = copy.copy(mask_red_or_green)
+    # Exclude boundary nodes (INPUT/OUTPUT) from hadamard merge
+    for i in range(n_nodes):
+        if is_boundary_node(i, colors):
+            mask_hadamard_merge[i] = False
     # Count how many edges a node has
     # If exactly two edges, allowed
     mask_hadamard_merge[ocurrances != 2] = False
@@ -435,6 +514,10 @@ def get_mask_list(colors, angles, selected_node, source, target,
                 break
 
     # Euler mask starting with only green/red nodes with two neighbors
+    # Exclude boundary nodes (INPUT/OUTPUT) from euler rule
+    for i in range(n_nodes):
+        if is_boundary_node(i, colors):
+            mask_euler[i] = False
     mask_euler[np.logical_not(np.logical_or(np.all(angles == ARBITRARY, axis=1),
                                             np.logical_or(np.all(angles == PI_half, axis=1),
                                                           np.all(angles == PI_three_half, axis=1))))] = False
@@ -643,6 +726,11 @@ def get_mask_id_color(colors, angles, source, target) -> np.ndarray:
     mask_id_right[np.all(colors == GREEN, axis=1)] = True
     mask_id_right[np.all(colors == RED, axis=1)] = True
 
+    # Exclude boundary nodes (INPUT/OUTPUT) from identity removal
+    for i in range(n_nodes):
+        if is_boundary_node(i, colors):
+            mask_id_right[i] = False
+
     ocurrances = np.bincount(source, minlength=n_nodes) + np.bincount(target, minlength=n_nodes)
     # If exactly two edges, allowed
     mask_id_right[ocurrances != 2] = False
@@ -657,6 +745,11 @@ def get_mask_id_hadamard(colors, angles, source, target) -> np.ndarray:
     mask_had_right = np.logical_and(np.all(colors[source] == HADAMARD, axis=-1),
                                     np.all(colors[target] == HADAMARD, axis=-1))
     return mask_had_right
+
+
+def is_boundary_node(node_idx, colors):
+    """Check if a node is an INPUT or OUTPUT boundary node"""
+    return (np.all(colors[node_idx] == INPUT) or np.all(colors[node_idx] == OUTPUT))
 
 
 def apply_auto_actions(colors, angles, source, target) -> tuple:
@@ -683,6 +776,11 @@ def remove_ids(colors, angles, source, target):
     """Removes all ids (colored spiders and double hadamards) from the diagram"""
     mask_remove_id_color = get_mask_id_color(colors, angles, source, target)
     mask_remove_id_hadamard = get_mask_id_hadamard(colors, angles, source, target)
+    
+    # Exclude boundary nodes (INPUT/OUTPUT) from cleanup
+    boundary_mask = np.array([is_boundary_node(i, colors) for i in range(len(colors))])
+    mask_remove_id_color[boundary_mask] = False
+    
     idcs_color = list(np.where(mask_remove_id_color)[0])
     idcs_hada = list(np.where(mask_remove_id_hadamard)[0])
     # While Id actions possible:
@@ -753,6 +851,11 @@ def merge_rule(colors, angles, selected_node, source, target, selected_edges, ac
                            target[action_idx]])
     merge_into = np.min(merge_idcs)
     merge_from = np.max(merge_idcs)
+
+    # Protect boundary nodes (INPUT/OUTPUT) from merging/fusion
+    if is_boundary_node(merge_from, colors) or is_boundary_node(merge_into, colors):
+        return (colors, angles, np.zeros(len(colors), dtype=np.int32),
+                source, target, np.zeros(len(target), dtype=np.int32))
 
     # Action applied to Green or red spiders
     if np.all(colors[merge_from] == RED) or np.all(colors[merge_from] == GREEN):
@@ -848,6 +951,11 @@ def color_change(colors, angles, selected_node, source, target, selected_edges, 
 
 def id_removal(colors, angles, selected_node, source, target, selected_edges, action_idx):
     """removes identity spider"""
+    # Protect boundary nodes (INPUT/OUTPUT) from deletion
+    if is_boundary_node(action_idx, colors):
+        return (colors, angles, np.zeros(len(colors), dtype=np.int32),
+                source, target, np.zeros(len(target), dtype=np.int32))
+    
     neighbours = get_neighbours(action_idx, source, target)
     # Add edge between neighbors
     source, target = add_edge(
@@ -1346,6 +1454,10 @@ def remove_edge(edge_idx, source, target):
 
 def remove_node_with_edges(node_idx, colors, angles, source, target):
     """Removes node at node_idx and all connected edges"""
+    # Protect boundary nodes (INPUT/OUTPUT) from deletion
+    if is_boundary_node(node_idx, colors):
+        return colors, angles, source, target
+    
     # Remove node color
     colors = np.delete(colors, node_idx, axis=0)
     # Remove node angle
